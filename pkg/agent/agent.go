@@ -2,18 +2,12 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
-	"time"
 
-	"github.com/netobserv/gopipes/pkg/node"
 	"github.com/netobserv/netobserv-ebpf-agent/pkg/ebpf"
-	"github.com/netobserv/netobserv-ebpf-agent/pkg/exporter"
 	"github.com/netobserv/netobserv-ebpf-agent/pkg/flow"
 	"github.com/netobserv/netobserv-ebpf-agent/pkg/ifaces"
-	kafkago "github.com/segmentio/kafka-go"
-	"github.com/segmentio/kafka-go/compress"
 	"github.com/sirupsen/logrus"
 )
 
@@ -27,7 +21,6 @@ type Flows struct {
 	// cancel function that allows stopping it when its interface is deleted
 	tracers    map[ifaces.Name]cancellableTracer
 	accounter  *flow.Accounter
-	exporter   flowExporter
 	interfaces ifaces.Informer
 	filter     interfaceFilter
 	// tracerFactory specifies how to instantiate flowTracer implementations
@@ -46,10 +39,6 @@ type cancellableTracer struct {
 	tracer flowTracer
 	cancel context.CancelFunc
 }
-
-// flowExporter abstract the ExportFlows' method of exporter.GRPCProto to allow dependency injection
-// in tests
-type flowExporter func(in <-chan []*flow.Record)
 
 // FlowsAgent instantiates a new agent, given a configuration.
 func FlowsAgent(cfg *Config) (*Flows, error) {
@@ -77,62 +66,9 @@ func FlowsAgent(cfg *Config) (*Flows, error) {
 		informer = ifaces.NewWatcher(cfg.BuffersLength)
 	}
 
-	// configure selected exporter
-	var exportFunc flowExporter
-	switch cfg.Export {
-	case "grpc":
-		if cfg.TargetHost == "" || cfg.TargetPort == 0 {
-			return nil, fmt.Errorf("missing target host or port: %s:%d",
-				cfg.TargetHost, cfg.TargetPort)
-		}
-		target := fmt.Sprintf("%s:%d", cfg.TargetHost, cfg.TargetPort)
-		grpcExporter, err := exporter.StartGRPCProto(target)
-		if err != nil {
-			return nil, err
-		}
-		exportFunc = grpcExporter.ExportFlows
-	case "kafka":
-		if len(cfg.KafkaBrokers) == 0 {
-			return nil, errors.New("at least one Kafka broker is needed")
-		}
-		var compression compress.Compression
-		if err := compression.UnmarshalText([]byte(cfg.KafkaCompression)); err != nil {
-			return nil, fmt.Errorf("wrong Kafka compression value %s. Admitted values are "+
-				"none, gzip, snappy, lz4, zstd: %w", cfg.KafkaCompression, err)
-		}
-		transport := kafkago.Transport{}
-		if cfg.KafkaEnableTLS {
-			tlsConfig, err := buildTLSConfig(cfg)
-			if err != nil {
-				return nil, err
-			}
-			transport.TLS = tlsConfig
-		}
-		exportFunc = (&exporter.KafkaJSON{
-			Writer: &kafkago.Writer{
-				Addr:      kafkago.TCP(cfg.KafkaBrokers...),
-				Topic:     cfg.KafkaTopic,
-				BatchSize: cfg.KafkaBatchSize,
-				// Segmentio's Kafka-go does not behave as standard Kafka library, and would
-				// throttle any Write invocation until reaching the timeout.
-				// Since we invoke write once each CacheActiveTimeout, we can safely disable this
-				// timeout throttling
-				// https://github.com/netobserv/flowlogs-pipeline/pull/233#discussion_r897830057
-				BatchTimeout: time.Nanosecond,
-				BatchBytes:   cfg.KafkaBatchBytes,
-				Async:        cfg.KafkaAsync,
-				Compression:  compression,
-				Transport:    &transport,
-			},
-		}).ExportFlows
-	default:
-		return nil, fmt.Errorf("wrong export type %s. Admitted values are grpc, kafka", cfg.Export)
-	}
-
 	return &Flows{
 		tracers:    map[ifaces.Name]cancellableTracer{},
 		accounter:  flow.NewAccounter(cfg.CacheMaxFlows, cfg.BuffersLength, cfg.CacheActiveTimeout),
-		exporter:   exportFunc,
 		interfaces: informer,
 		filter:     filter,
 		tracerFactory: func(name string, sampling uint32) flowTracer {
@@ -149,18 +85,18 @@ func (f *Flows) Run(ctx context.Context) error {
 
 	systemSetup()
 
-	tracedRecords, err := f.interfacesManager(ctx)
+	_, err := f.interfacesManager(ctx)
 	if err != nil {
 		return err
 	}
-	graph := f.processRecords(tracedRecords)
+	//graph := f.processRecords(tracedRecords)
 
 	alog.Info("Flows agent successfully started")
 	<-ctx.Done()
 	alog.Info("stopping Flows agent")
 
 	alog.Debug("waiting for all nodes to finish their pending work")
-	<-graph.Done()
+	//<-graph.Done()
 
 	alog.Info("Flows agent stopped")
 	return nil
@@ -205,27 +141,27 @@ func (f *Flows) interfacesManager(ctx context.Context) (<-chan *flow.Record, err
 }
 
 // processRecords creates the tracers --> accounter --> forwarder Flow processing graph
-func (f *Flows) processRecords(tracedRecords <-chan *flow.Record) *node.Terminal {
-	// The start node receives Records from the eBPF flow tracers. Currently it is just an external
-	// channel forwarder, as the Pipes library does not yet accept
-	// adding/removing nodes dynamically: https://github.com/mariomac/pipes/issues/5
-	alog.Debug("registering tracers' input")
-	tracersCollector := node.AsInit(func(out chan<- *flow.Record) {
-		for i := range tracedRecords {
-			out <- i
-		}
-	})
-	alog.Debug("registering accounter")
-	accounter := node.AsMiddle(f.accounter.Account)
-	alog.Debug("registering exporter")
-	export := node.AsTerminal(f.exporter)
-	alog.Debug("connecting graph")
-	tracersCollector.SendsTo(accounter)
-	accounter.SendsTo(export)
-	alog.Debug("starting graph")
-	tracersCollector.Start()
-	return export
-}
+// func (f *Flows) processRecords(tracedRecords <-chan *flow.Record) *node.Terminal {
+// 	// The start node receives Records from the eBPF flow tracers. Currently it is just an external
+// 	// channel forwarder, as the Pipes library does not yet accept
+// 	// adding/removing nodes dynamically: https://github.com/mariomac/pipes/issues/5
+// 	alog.Debug("registering tracers' input")
+// 	tracersCollector := node.AsInit(func(out chan<- *flow.Record) {
+// 		for i := range tracedRecords {
+// 			out <- i
+// 		}
+// 	})
+// 	// alog.Debug("registering accounter")
+// 	// accounter := node.AsMiddle(f.accounter.Account)
+// 	// alog.Debug("registering exporter")
+// 	// export := node.AsTerminal(f.exporter)
+// 	// alog.Debug("connecting graph")
+// 	//tracersCollector.SendsTo(accounter)
+// 	// accounter.SendsTo(export)
+// 	// alog.Debug("starting graph")
+// 	// tracersCollector.Start()
+// 	return export
+// }
 
 func (f *Flows) onInterfaceAdded(ctx context.Context, name ifaces.Name, flowsCh chan *flow.Record) {
 	// ignore interfaces that do not match the user configuration acceptance/exclusion lists
