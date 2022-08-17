@@ -90,7 +90,7 @@ build: prereqs fmt lint test vendors compile
 .PHONY: compile
 compile:
 	@echo "### Compiling project"
-	GOOS=$(GOOS) go build -ldflags "-X main.version=${SW_VERSION} -X 'main.buildVersion=${BUILD_VERSION}' -X 'main.buildDate=${BUILD_DATE}'" -mod vendor -a -o bin/netobserv-ebpf-agent cmd/netobserv-ebpf-agent.go
+	GOOS=$(GOOS) go build -ldflags "-X main.version=${SW_VERSION} -X 'main.buildVersion=${BUILD_VERSION}' -X 'main.buildDate=${BUILD_DATE}'" -mod vendor -a -o bin/ei-ebpf-agent cmd/ei-ebpf-agent.go
 
 .PHONY: test
 test:
