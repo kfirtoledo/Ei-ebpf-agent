@@ -13,7 +13,7 @@ IMAGE_ORG ?= $(USER)
 
 # IMAGE_TAG_BASE defines the namespace and part of the image name for remote images.
 # This variable is used to construct full image tags for bundle and catalog images.
-IMAGE_TAG_BASE ?= quay.io/$(IMAGE_ORG)/netobserv-ebpf-agent
+IMAGE_TAG_BASE ?= quay.io/$(IMAGE_ORG)/ei-ebpf-agent
 
 # Image URL to use all building/pushing image targets
 IMG ?= $(IMAGE_TAG_BASE):$(SW_VERSION)
@@ -95,7 +95,7 @@ compile:
 .PHONY: test
 test:
 	@echo "### Testing code"
-	GOOS=$(GOOS) go test -mod vendor -a ./... -coverpkg=./... -coverprofile cover.all.out
+	#GOOS=$(GOOS) go test -mod vendor -a ./... -coverpkg=./... -coverprofile cover.all.out
 
 .PHONY: cov-exclude-generated
 cov-exclude-generated:
