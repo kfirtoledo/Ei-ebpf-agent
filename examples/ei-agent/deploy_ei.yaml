@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ei-ebpf-agent
+  labels:
+    run: ei-ebpf-agent
+spec:
+  # the agent must be privileged
+  hostNetwork: true
+  containers:
+    - name: ei-ebpf-agent
+      image: quay.io/praveingk/ei-ebpf-agent:main
+      securityContext:
+        privileged: true
