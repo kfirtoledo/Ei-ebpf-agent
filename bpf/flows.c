@@ -6,6 +6,8 @@
 #include <linux/bpf.h>
 #include <linux/types.h>
 #include <linux/if_ether.h>
+#include <linux/icmp.h>
+#include <linux/pkt_cls.h>
 
 #include <bpf_helpers.h>
 #include <bpf_endian.h>
@@ -18,6 +20,18 @@
 // according to field 61 in https://www.iana.org/assignments/ipfix/ipfix.xhtml
 #define INGRESS 0
 #define EGRESS 1
+
+#define TRANSMIT_MODE      00
+#define RECIEVE_MODE       01
+
+#define SERVICE_FORWARD    8
+#define SERVICE_TCP_SPLIT  12
+#define SERVICE_ENCRYPTION 16
+
+#define EI_PORT            5001
+#define FORWARD_PORT       5100
+#define TCP_SPLIT_PORT     5200
+#define ENCRYPTION_PORT    5300
 
 // TODO: for performance reasons, replace the ring buffer by a hashmap and
 // aggregate the flows here instead of the Go Accounter
@@ -113,17 +127,95 @@ static inline int fill_ethhdr(struct ethhdr *eth, void *data_end, struct flow *f
     return SUBMIT;
 }
 
+
+
+static inline int addServcieBits(struct ethhdr *eth, void *data_end) {
+    u16 protocol= bpf_ntohs(eth->h_proto);
+    struct iphdr *ip = (void *)eth + sizeof(*eth);
+
+    if ((protocol == ETH_P_IP) && ((void *)ip + sizeof(*ip) <= data_end)) {
+        if (ip->protocol == IPPROTO_TCP) {
+            struct tcphdr *tcp = (void *)ip + sizeof(*ip);
+            if ((void *)tcp + sizeof(*tcp) <= data_end) {
+                u8 old_tos,new_tos;
+                u16 dport;
+                dport = __bpf_ntohs(tcp->dest);;
+                //tos update
+                if (dport == EI_PORT) {
+                    u16 old_csum,new_csum;
+                    old_tos = ip->tos;
+                    new_tos = old_tos | 0b0001;
+                    ip->tos = new_tos;
+                    bpf_printk("[tc] old tos=%x new tos=%x\n", old_tos, new_tos);
+
+                    //checksum update
+                    old_csum = __bpf_ntohs(ip->check);
+                    new_csum= old_csum + (new_tos - old_tos);
+
+                    new_csum = ~old_csum+ (ip->tos - old_tos);
+                    if (new_csum>>16) {
+                        new_csum = (new_csum & 0xffff) + (new_csum >> 16);
+
+                    }
+                    new_csum=~new_csum;
+
+                    bpf_printk("[tc] old checksum=%x new checksum=%x\n", old_csum, new_csum);
+                    ip->check = __bpf_ntohs(new_csum);   
+                }
+            }
+        }
+    }
+    return SUBMIT;
+}
+
+static inline int route2servcie(struct ethhdr *eth, void *data_end) {
+    u16 protocol= bpf_ntohs(eth->h_proto);
+    struct iphdr *ip = (void *)eth + sizeof(*eth);
+
+    //bpf_printk("[tc] Inside route2servcie");
+       if ((protocol == ETH_P_IP) && ((void *)ip + sizeof(*ip) <= data_end)) {
+        if (ip->protocol == IPPROTO_TCP) {
+            u8 tos= ip->tos;
+            bpf_printk("[tc] ip tos=%x ",tos);
+            
+            struct tcphdr *tcp = (void *)ip + sizeof(*ip);
+            if ((void *)tcp + sizeof(*tcp) <= data_end) {
+                u8 tos;
+                u16 old_dport,new_dport;
+                u16 old_sport,new_sport;
+                tos = ip->tos;
+                old_dport =__bpf_ntohs(tcp->dest);
+                //incoming traffic shaping
+                if (old_dport == EI_PORT) {
+                    switch (tos) {
+                    case SERVICE_FORWARD: {
+                        new_dport =FORWARD_PORT;
+                        tcp->dest =__bpf_ntohs(new_dport);
+                        bpf_printk("[tc] Incoming traffic: old dport=%d  new dport=%d \n", old_dport, new_dport);
+                    } break;
+                    default:
+                        break;
+                    }
+                }
+                //outgoing traffic shaping
+                old_sport =__bpf_ntohs(tcp->source);
+                if ((old_sport == FORWARD_PORT) || (old_sport == TCP_SPLIT_PORT)) {
+                    new_sport =EI_PORT;
+                    tcp->source =__bpf_ntohs(new_sport);
+                    bpf_printk("enter tc_func inside SYN flag");
+                    bpf_printk("[tc] outgoing traffic: old sport=%d new sport=%d \n", old_sport, new_sport);
+                }    
+            }
+        }
+    }
+    return SUBMIT;
+}
 // parses flow information for a given direction (ingress/egress)
 static inline int flow_parse(struct __sk_buff *skb, u8 direction) {
-
-    // If sampling is defined, will only parse 1 out of "sampling" flows
-    if (sampling != 0 && (bpf_get_prandom_u32() % sampling) != 0) {
-        return TC_ACT_OK;
-    }
-
+    u8 agentMod = RECIEVE_MODE;
     void *data = (void *)(long)skb->data;
     void *data_end = (void *)(long)skb->data_end;
-
+    // TODO: ETH_P_IPV6
     struct flow *flow = bpf_ringbuf_reserve(&flows, sizeof(struct flow), 0);
     if (!flow) {
         return TC_ACT_OK;
@@ -132,11 +224,17 @@ static inline int flow_parse(struct __sk_buff *skb, u8 direction) {
     struct ethhdr *eth = data;
     if (fill_ethhdr(eth, data_end, flow) == DISCARD) {
         bpf_ringbuf_discard(flow, 0);
-    } else {
+    } else {   
+        if (agentMod == TRANSMIT_MODE){
+            addServcieBits(eth,data_end);
+        } else {
+            route2servcie(eth,data_end);     
+        }
         flow->direction = direction;
         flow->bytes = skb->len;
         bpf_ringbuf_submit(flow, 0);
     }
+
     return TC_ACT_OK;
 }
 
