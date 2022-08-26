@@ -41,7 +41,7 @@ struct {
 } flows SEC(".maps");
 
 // Constant definitions, to be overridden by the invoker
-volatile const u32 sampling = 0;
+volatile const u32 service_mode = 0;
 
 const u8 ip4in6[] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff};
 
@@ -129,7 +129,7 @@ static inline int fill_ethhdr(struct ethhdr *eth, void *data_end, struct flow *f
 
 
 
-static inline int addServcieBits(struct ethhdr *eth, void *data_end) {
+static inline int add_service (struct ethhdr *eth, void *data_end) {
     u16 protocol= bpf_ntohs(eth->h_proto);
     struct iphdr *ip = (void *)eth + sizeof(*eth);
 
@@ -144,7 +144,7 @@ static inline int addServcieBits(struct ethhdr *eth, void *data_end) {
                 if (dport == EI_PORT) {
                     u16 old_csum,new_csum;
                     old_tos = ip->tos;
-                    new_tos = old_tos | 0b0001;
+                    new_tos = old_tos | 0b0100;
                     ip->tos = new_tos;
                     bpf_printk("[tc] old tos=%x new tos=%x\n", old_tos, new_tos);
 
@@ -152,7 +152,7 @@ static inline int addServcieBits(struct ethhdr *eth, void *data_end) {
                     old_csum = __bpf_ntohs(ip->check);
                     new_csum= old_csum + (new_tos - old_tos);
 
-                    new_csum = ~old_csum+ (ip->tos - old_tos);
+                    new_csum = ~old_csum + (ip->tos - old_tos);
                     if (new_csum>>16) {
                         new_csum = (new_csum & 0xffff) + (new_csum >> 16);
 
@@ -160,7 +160,7 @@ static inline int addServcieBits(struct ethhdr *eth, void *data_end) {
                     new_csum=~new_csum;
 
                     bpf_printk("[tc] old checksum=%x new checksum=%x\n", old_csum, new_csum);
-                    ip->check = __bpf_ntohs(new_csum);   
+                    ip->check = __bpf_ntohs(new_csum);
                 }
             }
         }
@@ -168,7 +168,7 @@ static inline int addServcieBits(struct ethhdr *eth, void *data_end) {
     return SUBMIT;
 }
 
-static inline int route2servcie(struct ethhdr *eth, void *data_end) {
+static inline int route2service (struct ethhdr *eth, void *data_end) {
     u16 protocol= bpf_ntohs(eth->h_proto);
     struct iphdr *ip = (void *)eth + sizeof(*eth);
 
@@ -177,7 +177,7 @@ static inline int route2servcie(struct ethhdr *eth, void *data_end) {
         if (ip->protocol == IPPROTO_TCP) {
             u8 tos= ip->tos;
             bpf_printk("[tc] ip tos=%x ",tos);
-            
+
             struct tcphdr *tcp = (void *)ip + sizeof(*ip);
             if ((void *)tcp + sizeof(*tcp) <= data_end) {
                 u8 tos;
@@ -204,7 +204,7 @@ static inline int route2servcie(struct ethhdr *eth, void *data_end) {
                     tcp->source =__bpf_ntohs(new_sport);
                     bpf_printk("enter tc_func inside SYN flag");
                     bpf_printk("[tc] outgoing traffic: old sport=%d new sport=%d \n", old_sport, new_sport);
-                }    
+                }
             }
         }
     }
@@ -212,10 +212,9 @@ static inline int route2servcie(struct ethhdr *eth, void *data_end) {
 }
 // parses flow information for a given direction (ingress/egress)
 static inline int flow_parse(struct __sk_buff *skb, u8 direction) {
-    u8 agentMod = RECIEVE_MODE;
     void *data = (void *)(long)skb->data;
     void *data_end = (void *)(long)skb->data_end;
-    // TODO: ETH_P_IPV6
+
     struct flow *flow = bpf_ringbuf_reserve(&flows, sizeof(struct flow), 0);
     if (!flow) {
         return TC_ACT_OK;
@@ -224,11 +223,11 @@ static inline int flow_parse(struct __sk_buff *skb, u8 direction) {
     struct ethhdr *eth = data;
     if (fill_ethhdr(eth, data_end, flow) == DISCARD) {
         bpf_ringbuf_discard(flow, 0);
-    } else {   
-        if (agentMod == TRANSMIT_MODE){
-            addServcieBits(eth,data_end);
+    } else {
+        if (service_mode == TRANSMIT_MODE){
+            add_service(eth,data_end);
         } else {
-            route2servcie(eth,data_end);     
+            route2service(eth,data_end);
         }
         flow->direction = direction;
         flow->bytes = skb->len;

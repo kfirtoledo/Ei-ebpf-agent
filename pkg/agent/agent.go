@@ -24,7 +24,7 @@ type Flows struct {
 	interfaces ifaces.Informer
 	filter     interfaceFilter
 	// tracerFactory specifies how to instantiate flowTracer implementations
-	tracerFactory func(name string, sampling uint32) flowTracer
+	tracerFactory func(name string, serviceMode uint32) flowTracer
 	cfg           *Config
 }
 
@@ -71,8 +71,8 @@ func FlowsAgent(cfg *Config) (*Flows, error) {
 		accounter:  flow.NewAccounter(cfg.CacheMaxFlows, cfg.BuffersLength, cfg.CacheActiveTimeout),
 		interfaces: informer,
 		filter:     filter,
-		tracerFactory: func(name string, sampling uint32) flowTracer {
-			return ebpf.NewFlowTracer(name, sampling)
+		tracerFactory: func(name string, serviceMode uint32) flowTracer {
+			return ebpf.NewFlowTracer(name, serviceMode)
 		},
 		cfg: cfg,
 	}, nil
@@ -174,7 +174,7 @@ func (f *Flows) onInterfaceAdded(ctx context.Context, name ifaces.Name, flowsCh 
 	defer f.trMutex.Unlock()
 	if _, ok := f.tracers[name]; !ok {
 		alog.WithField("name", name).Info("interface detected. Registering flow tracer")
-		tracer := f.tracerFactory(string(name), f.cfg.Sampling)
+		tracer := f.tracerFactory(string(name), f.cfg.ServiceMode)
 		if err := tracer.Register(); err != nil {
 			alog.WithField("interface", name).WithError(err).
 				Warn("can't register flow tracer. Ignoring")

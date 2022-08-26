@@ -79,4 +79,6 @@ type Config struct {
 	KafkaTLSUserKeyPath string `env:"KAFKA_TLS_USER_KEY_PATH"`
 	// ProfilePort sets the listening port for Go's Pprof tool. If it is not set, profile is disabled
 	ProfilePort int `env:"PROFILE_PORT"`
+	// ServiceMode sets the Mode of the eBPF datapath for EI service
+	ServiceMode uint32 `env:"SERVICE_MODE"`
 }
